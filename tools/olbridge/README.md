@@ -2,7 +2,7 @@
 
 Keeps a self-hosted Overleaf Community Edition in sync with projects on overleaf.com. It runs next to Overleaf as a small local service. It does not modify Overleaf's source code or its Docker image.
 
-Status: personal tool, tested on Overleaf CE 6.3.2 (Toolkit, x86 image under Rosetta on Apple Silicon, macOS). Only the sync engine has unit tests (`tests/`). The rest was tested by hand, and the in-page banner was **not** verified in a browser.
+Status: personal tool, tested on Overleaf CE 6.3.2 (Toolkit, x86 image under Rosetta on Apple Silicon, macOS). Only the sync engine has unit tests (`tests/`). The rest was tested by hand, including the in-page banner and conflict popup in a browser (pull-on-open banner, live "pulled" banner with Reload, conflict popup and "Keep overleaf.com" resolution).
 
 ## What it does
 
@@ -54,7 +54,7 @@ Environment: `OLBRIDGE_PYTHON` (interpreter with `olsync`), `OLBRIDGE_STATE`, `O
 - Polling, not push: expect up to about 15 s of delay.
 - Sessions expire. The dashboard shows "signed out"; log in again.
 - The "who is editing" message appears only for edits in the last three minutes and shows the last editor only.
-- Not verified: the in-page banner in a real browser, and behaviour with very large projects.
+- Not verified: behaviour with very large projects, and the "Keep local" and "Decide later" popup buttons (only "Keep overleaf.com" was exercised in the browser).
 - Overleaf under emulation on a 4 GB VM is heavy. Expect high CPU while it boots.
 
 ## Tests
