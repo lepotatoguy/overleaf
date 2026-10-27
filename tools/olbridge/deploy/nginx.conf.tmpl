@@ -1,0 +1,63 @@
+# Rendered by `olbridge setup-proxy` into .state/nginx/nginx.conf (mode 600: it embeds the API token).
+# Public side: 127.0.0.1:8788 (what you browse). Overleaf itself listens on 127.0.0.1:8795.
+worker_processes 1;
+error_log {{STATE}}/nginx/error.log warn;
+pid {{STATE}}/nginx/nginx.pid;
+events { worker_connections 256; }
+
+http {
+  access_log off;   # request lines can contain project ids; keep no log
+  client_body_temp_path {{STATE}}/nginx/tmp/body;
+  proxy_temp_path {{STATE}}/nginx/tmp/proxy;
+  fastcgi_temp_path {{STATE}}/nginx/tmp/fastcgi;
+  uwsgi_temp_path {{STATE}}/nginx/tmp/uwsgi;
+  scgi_temp_path {{STATE}}/nginx/tmp/scgi;
+
+  map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+  # Bridge API gate: GET, or POST carrying our custom header (forces a CORS preflight that we never answer).
+  map "$request_method:$http_x_olb_page" $olb_method_ok { "GET:" 1; "GET:1" 1; "POST:1" 1; default 0; }
+  map $http_origin $olb_origin_ok { "" 1; "http://localhost:8788" 1; default 0; }
+
+  server {
+    listen 127.0.0.1:8788;
+    server_name localhost;
+    client_max_body_size 100m;
+
+    # Only these bridge endpoints are reachable from Overleaf pages. The token never reaches the browser.
+    location ~ ^/olbridge/(inject\.js|api/(events|page|pull|resolve))$ {
+      if ($olb_method_ok = 0) { return 403; }
+      if ($olb_origin_ok = 0) { return 403; }
+      rewrite ^/olbridge/(.*)$ /$1 break;
+      proxy_pass http://127.0.0.1:8790;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_set_header Host 127.0.0.1:8790;
+      proxy_set_header Origin http://127.0.0.1:8790;
+      proxy_set_header X-OLB-Token "{{TOKEN}}";
+      proxy_buffering off;
+      proxy_read_timeout 1h;
+    }
+    location /olbridge/ { return 404; }
+
+    location / {
+      proxy_pass http://127.0.0.1:8795;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_set_header Host $http_host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $remote_addr;
+      proxy_set_header X-Forwarded-Proto http;
+      proxy_read_timeout 1h;
+      proxy_send_timeout 1h;
+
+      # Inject the banner script. Overleaf's CSP (nonce + strict-dynamic) would block it, so the header
+      # is replaced by an equivalent one that allows same-origin scripts. Local-only, trusted-user setup.
+      proxy_set_header Accept-Encoding "";
+      sub_filter_once on;
+      sub_filter '</body>' '<script src="/olbridge/inject.js"></script></body>';
+      proxy_hide_header Content-Security-Policy;
+      add_header Content-Security-Policy "script-src 'self' 'unsafe-inline' https:; object-src 'none'; base-uri 'none'" always;
+    }
+  }
+}

@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overleaf Bridge</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --mute:#6b7280; --line:#e2e5ea; --accent:#138a36; --warn:#b45309; --bad:#b42318; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14171a; --card:#1d2125; --ink:#e8eaed; --mute:#9aa0a6; --line:#2d333a; --accent:#3fb950; --warn:#e3a008; --bad:#f97066; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 -apple-system, system-ui, sans-serif; }
+  header { display:flex; gap:12px; align-items:center; padding:14px 20px; border-bottom:1px solid var(--line); background:var(--card); }
+  header h1 { font-size:17px; margin:0; flex:1; }
+  main { display:grid; grid-template-columns: 1fr 1fr; gap:16px; padding:16px 20px; max-width:1200px; margin:auto; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { font-size:14px; margin:0 0 10px; color:var(--mute); text-transform:uppercase; letter-spacing:.04em; }
+  .row { display:flex; gap:10px; align-items:center; padding:8px 0; border-top:1px solid var(--line); flex-wrap:wrap; }
+  .row:first-of-type { border-top:0; }
+  .grow { flex:1; min-width:140px; }
+  .sub { color:var(--mute); font-size:13px; }
+  .badge { font-size:12px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); }
+  .ok { color:var(--accent); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  button { font:inherit; padding:5px 12px; border-radius:7px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  input[type=search] { font:inherit; width:100%; padding:6px 10px; border-radius:7px; border:1px solid var(--line); background:var(--bg); color:var(--ink); margin-bottom:8px; }
+  #feed { max-height:320px; overflow:auto; font-size:13px; }
+  #feed div { padding:4px 0; border-top:1px solid var(--line); }
+  #feed time { color:var(--mute); margin-right:8px; }
+  dialog { border:1px solid var(--line); border-radius:12px; background:var(--card); color:var(--ink); width:min(960px, 94vw); padding:18px; }
+  dialog::backdrop { background:rgba(0,0,0,.45); }
+  .panes { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:12px 0; }
+  .pane h3 { font-size:13px; margin:0 0 6px; }
+  pre { margin:0; padding:10px; background:var(--bg); border:1px solid var(--line); border-radius:8px; max-height:340px; overflow:auto; font-size:12px; white-space:pre-wrap; word-break:break-word; }
+  .actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Overleaf Bridge</h1>
+  <span class="badge" id="s-com">overleaf.com</span>
+  <span class="badge" id="s-local">local</span>
+  <button id="refresh">Check now</button>
+</header>
+<main>
+  <section class="wide"><h2>Linked projects</h2><div id="links"></div></section>
+  <section><h2>Import from overleaf.com</h2><input type="search" id="q" placeholder="Filter projects"><div id="import"></div></section>
+  <section><h2>Live activity</h2><div id="feed"></div></section>
+</main>
+
+<dialog id="conflict">
+  <h2 id="c-title" style="margin:0"></h2>
+  <div class="sub" id="c-sub"></div>
+  <div class="panes">
+    <div class="pane"><h3>overleaf.com</h3><pre id="c-com"></pre></div>
+    <div class="pane"><h3>Local</h3><pre id="c-local"></pre></div>
+  </div>
+  <div class="actions">
+    <button id="c-skip">Decide later</button>
+    <button id="c-local-btn">Keep local</button>
+    <button id="c-com-btn" class="primary">Keep overleaf.com</button>
+  </div>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, ...kids) => {
+  const node = Object.assign(document.createElement(tag), props);
+  kids.forEach((k) => node.append(k));
+  return node;
+};
+let state = { links: [], importable: [], session: {} };
+const deferred = new Set();   // conflicts the user postponed this session
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (res.status === 401) { document.body.textContent = "Signed out. Run `olbridge open`."; throw new Error("auth"); }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.status);
+  return data;
+}
+
+function ago(iso) {
+  if (!iso) return "never";
+  const s = Math.max(0, (Date.now() - new Date(iso)) / 1000);
+  return s < 60 ? "just now" : s < 3600 ? Math.round(s / 60) + " min ago" : s < 86400 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago";
+}
+
+function renderLinks() {
+  const box = $("links");
+  box.replaceChildren(...(state.links.length ? state.links.map((l) => {
+    const push = el("input", { type: "checkbox", checked: l.push });
+    push.onchange = () => api("/api/push-setting", { id: l.id, enabled: push.checked });
+    const sync = el("button", { textContent: "Sync now (both ways)" });
+    sync.onclick = async () => { sync.disabled = true; try { await api("/api/sync", { id: l.id }); } catch (e) { alert(e.message); } sync.disabled = false; refresh(); };
+    const status = l.conflicts.length ? el("span", { className: "badge warn", textContent: l.conflicts.length + " conflict(s)" })
+      : l.ahead.length ? el("span", { className: "badge warn", textContent: l.ahead.length + " local edit(s) not on overleaf.com" })
+      : el("span", { className: "badge ok", textContent: "in sync" });
+    return el("div", { className: "row" },
+      el("div", { className: "grow" }, el("strong", { textContent: l.name }), el("div", { className: "sub", textContent: "last sync " + ago(l.last_sync) })),
+      status,
+      el("label", { className: "sub" }, push, " auto-push local edits"),
+      sync);
+  }) : [el("div", { className: "sub", textContent: "Nothing linked yet. Import a project." })]));
+}
+
+function renderImport() {
+  const q = $("q").value.toLowerCase();
+  const items = state.importable.filter((p) => p.name.toLowerCase().includes(q));
+  $("import").replaceChildren(...(items.length ? items.map((p) => {
+    const btn = el("button", { className: "primary", textContent: "Import" });
+    btn.onclick = async () => { btn.disabled = true; btn.textContent = "Importing..."; try { await api("/api/import", { id: p.id }); } catch (e) { alert(e.message); } refresh(); };
+    return el("div", { className: "row" },
+      el("div", { className: "grow" }, el("strong", { textContent: p.name }), el("div", { className: "sub", textContent: "edited " + ago(p.lastUpdated) + " by " + p.by })), btn);
+  }) : [el("div", { className: "sub", textContent: "No projects to import." })]));
+}
+
+function renderSession() {
+  for (const side of ["com", "local"]) {
+    const ok = state.session[side] !== false;
+    const node = $("s-" + side);
+    node.className = "badge " + (ok ? "ok" : "bad");
+    node.textContent = (side === "com" ? "overleaf.com" : "local") + (ok ? " connected" : " signed out");
+  }
+}
+
+function showNextConflict() {
+  const dlg = $("conflict");
+  if (dlg.open) return;
+  for (const l of state.links) for (const c of l.conflicts) {
+    const key = l.id + "/" + c.path;
+    if (deferred.has(key)) continue;
+    const show = (side) => side.text ?? (side.missing ? "(file does not exist)" : `(binary file, ${side.size} bytes)`);
+    $("c-title").textContent = "Conflict in " + c.path;
+    $("c-sub").textContent = l.name + ": changed on both sides since the last sync. Nothing is overwritten until you choose.";
+    $("c-com").textContent = show(c.com);
+    $("c-local").textContent = show(c.local);
+    const pick = async (choice) => { dlg.close(); if (choice === "skip") deferred.add(key); else { try { await api("/api/resolve", { id: l.id, path: c.path, choice }); } catch (e) { alert(e.message); } } refresh(); };
+    $("c-com-btn").onclick = () => pick("com");
+    $("c-local-btn").onclick = () => pick("local");
+    $("c-skip").onclick = () => pick("skip");
+    dlg.showModal();
+    return;
+  }
+}
+
+async function refresh() {
+  state = await api("/api/state");
+  renderSession(); renderLinks(); renderImport(); showNextConflict();
+}
+
+function addEvent(e) {
+  const row = el("div", {}, el("time", { textContent: new Date(e.ts).toLocaleTimeString() }), el("span", { className: e.kind === "warn" || e.kind === "conflict" ? "warn" : e.kind === "edit" ? "ok" : "", textContent: e.text }));
+  $("feed").prepend(row);
+  if (["edit", "conflict", "warn"].includes(e.kind) && "Notification" in window && Notification.permission === "granted") new Notification("Overleaf Bridge", { body: e.text });
+  if (["pull", "push", "conflict", "info"].includes(e.kind)) refresh();
+}
+
+$("q").oninput = renderImport;
+$("refresh").onclick = async () => { await api("/api/poke", {}); refresh(); };
+if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+new EventSource("/api/events?after=0").onmessage = (m) => addEvent(JSON.parse(m.data));
+refresh(); setInterval(refresh, 10000);
+</script>
+</body>
+</html>

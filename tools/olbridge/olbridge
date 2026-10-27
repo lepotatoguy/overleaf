@@ -1,0 +1,5 @@
+#!/bin/bash
+# Wrapper: private umask, python that has overleaf-sync (olsync) installed.
+umask 077
+cd "$(dirname "$0")" || exit 1
+exec "${OLBRIDGE_PYTHON:-$HOME/overleaf-sync-upstream-test/bin/python}" cli.py "$@"
